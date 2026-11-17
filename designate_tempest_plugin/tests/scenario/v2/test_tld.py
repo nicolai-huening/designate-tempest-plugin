@@ -27,7 +27,7 @@ LOG = logging.getLogger(__name__)
 
 class TldZoneTest(base.BaseDnsV2Test):
     credentials = ["admin", "primary"]
-    tld_suffix = '.'.join(["TldZoneTest", CONF.dns_feature_enabled.tld_suffix])
+    tld_suffix = '.'.join(["TldZoneTest", CONF.dns.tld_suffix])
 
     @classmethod
     def setup_credentials(cls):

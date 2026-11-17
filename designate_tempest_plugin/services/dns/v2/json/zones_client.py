@@ -14,6 +14,7 @@
 from tempest.lib.common.utils import data_utils
 
 from designate_tempest_plugin.common import constants as const
+
 from designate_tempest_plugin import data_utils as dns_data_utils
 from designate_tempest_plugin.common import waiters
 from designate_tempest_plugin.services.dns.v2.json import base
@@ -80,7 +81,7 @@ class ZonesClient(base.DnsClientV2Base):
 
         if serial:
             zone['serial'] = serial
-            
+
         if attributes:
             zone['attributes'] = attributes
 
@@ -116,6 +117,20 @@ class ZonesClient(base.DnsClientV2Base):
             'zones', uuid, params=params, headers=headers)
 
     @base.handle_errors
+    @base.handle_errors
+    def show_zone_nameservers(self, zone_uuid, params=None, headers=None):
+        """Gets list of Zone Name Servers
+        :param zone_uuid: Unique identifier of the zone in UUID format.
+        :param params: A Python dict that represents the query parameters to
+                       include in the request URI.
+        :param headers (dict): The headers to use for the request.
+        :return: Serialized nameservers as a list.
+        """
+        return self._show_request(
+            'zones/{0}/nameservers'.format(zone_uuid), uuid=None,
+            params=params, headers=headers)
+
+    @base.handle_errors
     def list_zones(self, params=None, headers=None):
         """Gets a list of zones.
         :param params: A Python dict that represents the query parameters to
@@ -149,8 +164,8 @@ class ZonesClient(base.DnsClientV2Base):
         return resp, body
 
     def update_zone(self, uuid, email=None, ttl=None,
-                    description=None, serial=None, wait_until=False, params=None,
-                    headers=None):
+                    description=None, serial=None, wait_until=False,
+                    params=None, headers=None):
         """Update a zone with the specified parameters.
         :param uuid: The unique identifier of the zone.
         :param email: The email for the zone.
@@ -188,6 +203,20 @@ class ZonesClient(base.DnsClientV2Base):
         return resp, body
 
     @base.handle_errors
+    def trigger_manual_update(self, zone_id, headers=None):
+        """Trigger manually update for secondary zone.
+
+        :param zone_id: Secondary zone ID.
+        :param headers (dict): The headers to use for the request.
+        :return: A tuple with the server response and body.
+        """
+        resp, body = self._create_request(
+            'zones/{}/tasks/xfr'.format(zone_id), headers=headers)
+        # Trigger Zone Update should Return a HTTP 202
+        self.expected_success(202, resp.status)
+        return resp, body
+
+    @base.handle_errors
     def abandon_zone(self, zone_id, headers=None):
         """This removes a zone from the designate database without removing
          it from the backends.
@@ -205,28 +234,19 @@ class ZonesClient(base.DnsClientV2Base):
         return resp, body
 
     @base.handle_errors
-    def trigger_manual_update(self, zone_id, headers=None):
-        """Trigger manually update for secondary zone.
+    def zone_move_pool(self, zone_id, pool_id, headers=None):
+        """This moves a zone from the existing designate pool to
+         specified target pool.
 
-        :param zone_id: Secondary zone ID.
+        :param zone_id: Zone ID.
+        :param pool_id: Target Pool ID
         :param headers (dict): The headers to use for the request.
         :return: A tuple with the server response and body.
         """
+        pool = {"pool_id": pool_id}
         resp, body = self._create_request(
-            'zones/{}/tasks/xfr'.format(zone_id), headers=headers)
-        # Trigger Zone Update should Return a HTTP 202
-        self.expected_success(202, resp.status)
+            'zones/{}/tasks/pool_move'.format(zone_id),
+            pool, headers=headers,
+            expected_statuses=self.DELETE_STATUS_CODES)
         return resp, body
 
-    @base.handle_errors
-    def show_zone_nameservers(self, zone_uuid, params=None, headers=None):
-        """Gets list of Zone Name Servers
-        :param zone_uuid: Unique identifier of the zone in UUID format.
-        :param params: A Python dict that represents the query parameters to
-                       include in the request URI.
-        :param headers (dict): The headers to use for the request.
-        :return: Serialized nameservers as a list.
-        """
-        return self._show_request(
-            'zones/{0}/nameservers'.format(zone_uuid), uuid=None,
-            params=params, headers=headers)

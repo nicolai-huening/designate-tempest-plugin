@@ -12,13 +12,14 @@
 # License for the specific language governing permissions and limitations
 # under the License.
 from oslo_log import log as logging
+from oslo_utils import versionutils
+
 from tempest import test
 from tempest import config
 from tempest.lib.common.utils import test_utils as utils
 
 from designate_tempest_plugin.services.dns.query.query_client import (
     QueryClient)
-from designate_tempest_plugin import clients
 from designate_tempest_plugin.tests import rbac_utils
 
 
@@ -69,7 +70,7 @@ class BaseDnsTest(rbac_utils.RBACTestsMixin, test.BaseTestCase):
     # have cls.os_alt, and admin will have cls.os_admin.
     # NOTE(johnsom) We will allocate most credentials here so that each test
     # can test for allowed and disallowed RBAC policies.
-    credentials = ['primary']
+    credentials = ['admin', 'primary', 'alt']
     if CONF.dns_feature_enabled.enforce_new_defaults:
         credentials.extend(['project_member', 'project_reader'])
 
@@ -107,7 +108,8 @@ class BaseDnsTest(rbac_utils.RBACTestsMixin, test.BaseTestCase):
         )
         # Most tests need a "primary" zones client and we need it for the
         # API version check, so create one instance here.
-        os_mgr = getattr(cls, 'os_primary', None) or getattr(cls, 'os_admin', None)
+        os_mgr = (getattr(cls, 'os_primary', None)
+                  or getattr(cls, 'os_admin', None))
         cls.zones_client = os_mgr.dns_v2.ZonesClient()
 
     @classmethod
@@ -139,6 +141,10 @@ class BaseDnsTest(rbac_utils.RBACTestsMixin, test.BaseTestCase):
 
         with context:
             callable_(*args, **kwargs)
+
+    def transfer_request_delete(self, transfer_client, transfer_request_id):
+        return utils.call_and_ignore_notfound_exc(
+            transfer_client.delete_transfer_request, transfer_request_id)
 
     def _check_zone_deleted(self, zone_client, zone_id, headers=None):
         return utils.call_and_ignore_notfound_exc(
@@ -187,6 +193,7 @@ class BaseDnsTest(rbac_utils.RBACTestsMixin, test.BaseTestCase):
         return utils.call_and_ignore_notfound_exc(
             recordset_client.delete_recordset,
             zone_id, recordset_id, **kwargs)
+
     def _check_recordset_deleted(
             self, recordset_client, zone_id, recordset_id):
         return utils.call_and_ignore_notfound_exc(
@@ -199,9 +206,6 @@ class BaseDnsV2Test(BaseDnsTest):
     all_projects_header = {'X-Auth-All-Projects': True}
     managed_records = {'x-designate-edit-managed-records': True}
 
-    # Use the Designate V2 Client Manager
-    client_manager = clients.ManagerV2
-
     @classmethod
     def skip_checks(cls):
         super(BaseDnsV2Test, cls).skip_checks()
@@ -211,12 +215,16 @@ class BaseDnsV2Test(BaseDnsTest):
                         % cls.__name__)
             raise cls.skipException(skip_msg)
 
+    def _skip_if_tlsa_not_supported(self):
+        if not versionutils.is_compatible('2.4', self.api_version,
+                                          same_major=False):
+            raise self.skipException(
+                'TLSA record tests require Designate API version 2.3 or '
+                'newer.')
+
 
 class BaseDnsAdminTest(BaseDnsTest):
     """Base class for DNS Admin API tests."""
-
-    # Use the Designate Admin Client Manager
-    client_manager = clients.ManagerAdmin
 
     @classmethod
     def skip_checks(cls):

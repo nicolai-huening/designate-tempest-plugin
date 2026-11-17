@@ -321,3 +321,4 @@ def wait_for_zone_serial(client, zone_id, serial):
                 message = '(%s) %s' % (caller, message)
 
             raise lib_exc.TimeoutException(message)
+

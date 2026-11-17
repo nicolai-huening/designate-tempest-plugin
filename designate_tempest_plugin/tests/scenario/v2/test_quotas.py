@@ -35,7 +35,7 @@ CONF = config.CONF
 
 class QuotasV2Test(base.BaseDnsV2Test):
 
-    credentials = ['primary', 'admin']
+    credentials = ['primary', 'admin', 'alt']
     test_quota_limit = 3
 
     @classmethod

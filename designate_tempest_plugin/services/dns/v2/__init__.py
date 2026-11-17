@@ -32,7 +32,7 @@ from .json.api_version_client import ApiVersionClient
 
 __all__ = ['BlacklistsClient', 'DesignateLimitClient', 'PoolClient',
            'PtrClient', 'QuotasClient', 'RecordsetClient', 'ServiceClient',
-           'SharedZonesClient', 'TldClient', 'TransferAcceptClient',
-           'TransferRequestClient', 'TsigkeyClient', 'ZonesClient',
-           'ZoneExportsClient', 'ZoneImportsClient', 'ApiVersionClient',
-           'SharedPoolClient']
+           'SharedPoolClient', 'SharedZonesClient', 'TldClient',
+           'TransferAcceptClient', 'TransferRequestClient', 'TsigkeyClient',
+           'ZonesClient', 'ZoneExportsClient', 'ZoneImportsClient',
+           'ApiVersionClient']

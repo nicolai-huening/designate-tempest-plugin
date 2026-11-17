@@ -38,7 +38,7 @@ class BaseBlacklistsTest(base.BaseDnsV2Test):
         super(BaseBlacklistsTest, cls).resource_setup()
 
         # Make sure we have an allowed TLD available
-        tld_name = dns_data_utils.rand_zone_name(name="testdomain")
+        tld_name = dns_data_utils.rand_zone_name(name="BaseBlacklistsTest")
         cls.tld_name = f".{tld_name}"
         cls.class_tld = cls.admin_tld_client.create_tld(tld_name=tld_name[:-1])
 

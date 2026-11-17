@@ -14,6 +14,7 @@
 
 from oslo_log import log as logging
 from oslo_utils import uuidutils
+from oslo_utils import versionutils
 from tempest import config
 from tempest.lib.common.utils import data_utils
 from tempest.lib import decorators
@@ -28,46 +29,53 @@ CONF = config.CONF
 
 
 class BaseSharedZoneTest(base.BaseDnsV2Test):
-    credentials = ['primary', 'admin', 'alt', ['demo']]
+
+    credentials = ['admin', 'primary', 'alt', 'project_reader',
+                   'project_member', ['demo', 'member']]
 
     excluded_keys = ['links']
 
     @classmethod
-    def setup_credentials(cls):
-        cls.set_network_resources()
-        super(BaseSharedZoneTest, cls).setup_credentials()
-
-    @classmethod
     def resource_setup(cls):
         super(BaseSharedZoneTest, cls).resource_setup()
+
+        if not versionutils.is_compatible('2.1', cls.api_version,
+                                          same_major=False):
+            raise cls.skipException(
+                'The shared zones API tests require Designate API version '
+                '2.1 or newer. Skipping Shared Zones API tests.')
+
+        # Make sure we have an allowed TLD available
+        tld_name = dns_data_utils.rand_zone_name(name="APISharedZoneTest")
+        cls.tld_name = f".{tld_name}"
+        cls.class_tld = cls.admin_tld_client.create_tld(tld_name=tld_name[:-1])
+
         # All the shared zone tests need a zone, create one to share
-        zone_name = dns_data_utils.rand_zone_name(name="testdomain")
+        zone_name = dns_data_utils.rand_zone_name(name="TestZone",
+                                                  suffix=cls.tld_name)
         LOG.info('Create a zone: %s', zone_name)
         cls.zone = cls.zones_client.create_zone(name=zone_name)[1]
 
     @classmethod
     def resource_cleanup(cls):
-        try:
-            cls.zones_client.delete_zone(
-                cls.zone['id'], ignore_errors=lib_exc.NotFound,
-                delete_shares=True)
-        finally:
-            super(BaseSharedZoneTest, cls).resource_cleanup()
+        cls.zones_client.delete_zone(
+            cls.zone['id'], ignore_errors=lib_exc.NotFound, delete_shares=True)
+        cls.admin_tld_client.delete_tld(cls.class_tld[1]['id'])
+        super(BaseSharedZoneTest, cls).resource_cleanup()
 
     @classmethod
     def setup_clients(cls):
         super(BaseSharedZoneTest, cls).setup_clients()
-        cls.zones_client = cls.os_primary.zones_client
-        cls.share_zone_client = cls.os_primary.shared_zones_client
-        cls.adm_shr_client = cls.os_admin.shared_zones_client
-        cls.adm_zones_client = cls.os_admin.zones_client
-        cls.alt_zone_client = cls.os_alt.zones_client
-        cls.demo_zone_client = cls.os_demo.zones_client
-        cls.alt_share_zone_client = cls.os_alt.shared_zones_client
+
+        cls.admin_tld_client = cls.os_admin.dns_v2.TldClient()
+        cls.adm_shr_client = cls.os_admin.dns_v2.SharedZonesClient()
+        cls.alt_zone_client = cls.os_alt.dns_v2.ZonesClient()
+        cls.demo_zone_client = cls.os_demo.dns_v2.ZonesClient()
+        cls.share_zone_client = cls.os_primary.dns_v2.SharedZonesClient()
+        cls.alt_share_zone_client = cls.os_alt.dns_v2.SharedZonesClient()
 
 
 class SharedZonesTest(BaseSharedZoneTest):
-    credentials = ['primary', 'admin', 'alt', ['demo']]
 
     @classmethod
     def setup_credentials(cls):
@@ -77,6 +85,14 @@ class SharedZonesTest(BaseSharedZoneTest):
 
     @decorators.idempotent_id('982a7780-a460-4c13-97df-b4855bf19c7b')
     def test_create_zone_share(self):
+        # Test RBAC
+        expected_allowed = ['os_admin', 'os_primary', 'os_alt']
+        if CONF.dns_feature_enabled.enforce_new_defaults:
+            expected_allowed.append('os_project_member')
+        self.check_CUD_RBAC_enforcement(
+            'SharedZonesClient', 'create_zone_share', expected_allowed, True,
+            self.zone['id'], self.alt_zone_client.project_id)
+
         # Test a basic API create a zone share
         shared_zone = self.share_zone_client.create_zone_share(
             self.zone['id'], self.alt_zone_client.project_id)[1]
@@ -100,6 +116,15 @@ class SharedZonesTest(BaseSharedZoneTest):
         self.addCleanup(self.share_zone_client.delete_zone_share,
                         self.zone['id'], shared_zone['id'])
 
+        # Test RBAC
+        expected_allowed = ['os_admin', 'os_primary', 'os_alt']
+        if CONF.dns_feature_enabled.enforce_new_defaults:
+            expected_allowed.append('os_project_member')
+            expected_allowed.append('os_project_reader')
+        self.check_CUD_RBAC_enforcement(
+            'SharedZonesClient', 'show_zone_share', expected_allowed, True,
+            self.zone['id'], shared_zone['id'])
+
         # Test show zone share
         LOG.info('Fetch the zone share')
         body = self.share_zone_client.show_zone_share(self.zone['id'],
@@ -116,6 +141,14 @@ class SharedZonesTest(BaseSharedZoneTest):
                         self.zone['id'], shared_zone['id'],
                         ignore_errors=lib_exc.NotFound)
 
+        # Test RBAC
+        expected_allowed = ['os_admin', 'os_primary']
+        if CONF.dns_feature_enabled.enforce_new_defaults:
+            expected_allowed.append('os_project_member')
+        self.check_CUD_RBAC_enforcement(
+            'SharedZonesClient', 'delete_zone_share', expected_allowed, True,
+            self.zone['id'], shared_zone['id'])
+
         # Test zone share delete
         LOG.info('Delete zone share')
         self.share_zone_client.delete_zone_share(self.zone['id'],
@@ -123,92 +156,33 @@ class SharedZonesTest(BaseSharedZoneTest):
 
         LOG.info('Ensure the zone share was deleted')
         self.assertRaises(lib_exc.NotFound,
-                          self.share_zone_client.show_zone_share,
-                          self.zone['id'], shared_zone['id'])
+            self.share_zone_client.show_zone_share,
+            self.zone['id'], shared_zone['id'])
 
-    @decorators.idempotent_id('55a44bbe-e14d-4d2a-9421-9980898a0b1d')
-    def test_list_shares(self):
-        shares = self.share_zone_client.list_shares()
-        LOG.info(f"List of shares {shares}")
-        self.assertNotEmpty(shares[1]['shared_zones'])
+    @decorators.idempotent_id('707bfa4f-f15b-4486-ba5c-0e5991f0f3a5')
+    def test_list_zone_shares(self):
+        shared_zone = self.share_zone_client.create_zone_share(
+            self.zone['id'], self.alt_zone_client.project_id)[1]
+        self.addCleanup(self.share_zone_client.delete_zone_share,
+                        self.zone['id'], shared_zone['id'])
 
-    @decorators.idempotent_id('1b4fc7bc-4d1d-43e5-a98f-5052665eeb5d')
-    def test_list_shares_zone_id_param(self):
-        zone_name = dns_data_utils.rand_zone_name(name="testdomain")
-        zone = self.adm_zones_client.create_zone(name=zone_name)[1]
-        self.addCleanup(self.adm_zones_client.delete_zone,
-                        zone['id'], delete_shares=True)
-        shared_zone = self.adm_shr_client.create_zone_share(
-            zone['id'], self.alt_zone_client.project_id)[1]
-        self.addCleanup(self.adm_shr_client.delete_zone_share,
-                        zone['id'], shared_zone['id'])
+        # Test RBAC
+        expected_allowed = ['os_admin', 'os_primary', 'os_alt']
+        if CONF.dns_feature_enabled.enforce_new_defaults:
+            expected_allowed.append('os_project_member')
+            expected_allowed.append('os_project_reader')
+        self.check_CUD_RBAC_enforcement(
+            'SharedZonesClient', 'list_zone_shares', expected_allowed, True,
+            self.zone['id'])
 
-        # List of shares by zone id
-        params = {"zone_id": zone['id']}
-        shares = self.adm_shr_client.list_shares(params=params)[1]
-        LOG.info(f"List of shares {shares} for zone {zone}")
-        self.assertEqual(1, len(shares['shared_zones']))
+        shared_zone = self.share_zone_client.create_zone_share(
+            self.zone['id'], self.demo_zone_client.project_id)[1]
+        self.addCleanup(self.share_zone_client.delete_zone_share,
+                        self.zone['id'], shared_zone['id'])
 
-    @decorators.idempotent_id('21cfced2-a31d-43cd-93e9-33e7c31b7172')
-    def test_list_shares_tenant_id_param(self):
-        zone_name = dns_data_utils.rand_zone_name(name="testdomain")
-        zone = self.adm_zones_client.create_zone(name=zone_name)[1]
-        self.addCleanup(self.adm_zones_client.delete_zone,
-                        zone['id'], delete_shares=True)
-        shared_zone = self.adm_shr_client.create_zone_share(
-            zone['id'], self.alt_zone_client.project_id)[1]
-        self.addCleanup(self.adm_shr_client.delete_zone_share,
-                        zone['id'], shared_zone['id'])
+        LOG.info('List zone shares')
+        body = self.share_zone_client.list_zone_shares(self.zone['id'])[1]
 
-        shared_zone_demo = self.adm_shr_client.create_zone_share(
-            zone['id'], self.demo_zone_client.project_id)[1]
-        self.addCleanup(self.adm_shr_client.delete_zone_share,
-                        zone['id'], shared_zone_demo['id'])
-
-        LOG.info('List zone shares for project id param')
-        params = {
-                  'target_project_id': self.demo_zone_client.project_id
-                  }
-        body = self.adm_shr_client.list_shares(params=params)[1]
-        filtered_shares = [
-            share for share in body['shared_zones']
-            if share['zone_id'] == zone['id']
-        ]
-        self.assertEqual(1, len(filtered_shares))
-
-    @decorators.idempotent_id('56157e02-75dc-4ca9-8a92-964ab80a374c')
-    def test_list_shares_both_params(self):
-        zone_name = dns_data_utils.rand_zone_name(name="testdomain")
-        zone = self.adm_zones_client.create_zone(name=zone_name)[1]
-        self.addCleanup(self.adm_zones_client.delete_zone,
-                        zone['id'], delete_shares=True)
-        shared_zone = self.adm_shr_client.create_zone_share(
-            zone['id'], self.alt_zone_client.project_id)[1]
-        self.addCleanup(self.adm_shr_client.delete_zone_share,
-                        zone['id'], shared_zone['id'])
-
-        shared_zone_demo = self.adm_shr_client.create_zone_share(
-            zone['id'], self.demo_zone_client.project_id)[1]
-        self.addCleanup(self.adm_shr_client.delete_zone_share,
-                        zone['id'], shared_zone_demo['id'])
-
-        LOG.info('List zone shares for zone and alt target project id')
-        params = {"zone_id": zone['id'],
-                  'target_project_id': self.demo_zone_client.project_id
-                  }
-        body = self.adm_shr_client.list_shares(params=params)[1]
-        self.assertEqual(1, len(body['shared_zones']))
-
-        LOG.info('List zone shares for zone and demo target project id')
-        params = {"zone_id": zone['id'],
-                  'target_project_id': self.alt_share_zone_client.project_id
-                  }
-        body = self.adm_shr_client.list_shares(params=params)[1]
-        self.assertEqual(1, len(body['shared_zones']))
-
-        LOG.info('List zone shares for zone_id param')
-        params = {"zone_id": zone['id']}
-        body = self.adm_shr_client.list_shares(params=params)[1]
         self.assertEqual(2, len(body['shared_zones']))
         targets = []
         for share in body['shared_zones']:
@@ -218,8 +192,6 @@ class SharedZonesTest(BaseSharedZoneTest):
 
 
 class NegativeSharedZonesTest(BaseSharedZoneTest):
-
-    credentials = ['primary', 'admin', 'alt', ['demo']]
 
     @classmethod
     def setup_credentials(cls):
@@ -232,59 +204,52 @@ class NegativeSharedZonesTest(BaseSharedZoneTest):
         shared_zone = self.share_zone_client.create_zone_share(
             self.zone['id'], self.alt_zone_client.project_id)[1]
         self.addCleanup(self.share_zone_client.delete_zone_share,
-                        self.zone['id'], shared_zone['id'],
-                        ignore_errors=lib_exc.NotFound)
+                        self.zone['id'], shared_zone['id'])
 
         LOG.info('Ensure target project cannot delete zone')
-        with self.assertRaisesDns(lib_exc.NotFound, "zone_not_found", 404):
-            self.alt_zone_client.delete_zone(self.zone['id'], delete_shares=True)
+        self.assertRaises(lib_exc.Forbidden,
+                          self.alt_zone_client.delete_zone,
+                          self.zone['id'])
 
     @decorators.idempotent_id('f4354b5c-8dbb-4bb9-8025-f65f8f2b21fb')
     def test_target_project_cannot_update_zone(self):
-        zone_name = dns_data_utils.rand_zone_name(name="testdomain")
-        zone = self.zones_client.create_zone(name=zone_name)[1]
-        self.addCleanup(self.wait_zone_delete, self.zones_client,
-                        zone['id'],
-                        ignore_errors=lib_exc.NotFound,
-                        delete_shares=True)
         shared_zone = self.share_zone_client.create_zone_share(
-            zone['id'], self.alt_zone_client.project_id)[1]
+            self.zone['id'], self.alt_zone_client.project_id)[1]
         self.addCleanup(self.share_zone_client.delete_zone_share,
-                        zone['id'], shared_zone['id'],
-                        ignore_errors=lib_exc.NotFound,
-                        )
+                        self.zone['id'], shared_zone['id'])
 
         LOG.info('Ensure target project cannot update the zone')
-        with self.assertRaisesDns(
-                lib_exc.NotFound, 'zone_not_found', 404):
-            self.alt_zone_client.update_zone(zone['id'], ttl=5)
+        self.assertRaises(lib_exc.Forbidden,
+                          self.alt_zone_client.update_zone,
+                          self.zone['id'], ttl=5)
 
     @decorators.idempotent_id('4389a12b-8609-493c-9640-d3c67b625022')
     def test_target_project_share_permissions(self):
-        zone_name = dns_data_utils.rand_zone_name(name="testdomain")
-        zone = self.zones_client.create_zone(name=zone_name)[1]
-        self.addCleanup(self.wait_zone_delete, self.zones_client,
-                        zone['id'],
-                        ignore_errors=lib_exc.NotFound,
-                        delete_shares=True)
         shared_zone = self.share_zone_client.create_zone_share(
-            zone['id'], self.alt_zone_client.project_id)[1]
+            self.zone['id'], self.alt_zone_client.project_id)[1]
         self.addCleanup(self.share_zone_client.delete_zone_share,
-                        zone['id'], shared_zone['id'],
-                        ignore_errors=lib_exc.NotFound)
+                        self.zone['id'], shared_zone['id'])
 
-        # NOTE(ccloud): alt holds admin-level DNS roles, so for a zone that is
-        # shared with it Designate goes on to the other share checks, and
-        # 'demo' (no roles) is allocated as the primary account, the zone
-        # owner, which gives 400 instead of 404. As in ccloud master, check
-        # the class zone, which is not shared with alt.
-        LOG.info('Ensure target project cannot share a zone it has no '
-                 'access to')
+        LOG.info('Ensure target project cannot share shared zone')
         self.assertRaises(
-            lib_exc.NotFound,
+            lib_exc.Forbidden,
             self.alt_share_zone_client.create_zone_share,
             self.zone['id'],
             self.demo_zone_client.project_id)
+
+    @decorators.idempotent_id('abc0f820-ae27-4e85-8f00-0b8e8abf3ae9')
+    def test_target_project_cannot_subzone(self):
+        shared_zone = self.share_zone_client.create_zone_share(
+            self.zone['id'], self.alt_zone_client.project_id)[1]
+        self.addCleanup(self.share_zone_client.delete_zone_share,
+                        self.zone['id'], shared_zone['id'])
+
+        LOG.info('Ensure target project cannot create sub-zones')
+        sub_zone_name = "test.{}".format(self.zone['name'])
+        self.assertRaises(
+            lib_exc.Forbidden,
+            self.alt_zone_client.create_zone,
+            name=sub_zone_name)
 
     @decorators.idempotent_id('957ba3f8-c250-11ed-a8b1-201e8823901f')
     def test_share_zone_with_yourself_is_not_allowed(self):
@@ -307,7 +272,13 @@ class AdminSharedZonesTest(BaseSharedZoneTest):
         LOG.info(
             'Admin user creates shared zone for Alt tenant '
             'using "x-auth-all-projects" header')
-        headers = self.all_projects_header
+        # Scoped tokens do not have a project ID, work around that here
+        if CONF.enforce_scope.designate:
+            headers = self.all_projects_header.copy()
+            headers.update(
+                {'x-auth-sudo-project-id': self.share_zone_client.project_id})
+        else:
+            headers = self.all_projects_header
 
         shared_zone = self.adm_shr_client.create_zone_share(
             self.zone['id'], self.alt_zone_client.project_id,
@@ -317,7 +288,11 @@ class AdminSharedZonesTest(BaseSharedZoneTest):
             shared_zone['id'], headers=self.all_projects_header)
         self.assertTrue(uuidutils.is_uuid_like(shared_zone['id']))
         self.assertEqual(self.zone['id'], shared_zone['zone_id'])
-        self.assertEqual(self.adm_shr_client.project_id,
+        if CONF.enforce_scope.designate:
+            self.assertEqual(self.share_zone_client.project_id,
+                             shared_zone['project_id'])
+        else:
+            self.assertEqual(self.adm_shr_client.project_id,
                              shared_zone['project_id'])
         self.assertEqual(self.alt_zone_client.project_id,
                          shared_zone['target_project_id'])
@@ -354,7 +329,13 @@ class AdminSharedZonesTest(BaseSharedZoneTest):
             'Admin user creates shared zone for Alt tenant'
             ' using "x-auth-all-projects" header')
         # Scoped tokens do not have a project ID, work around that here
-        headers = self.all_projects_header
+        if CONF.enforce_scope.designate:
+            headers = self.all_projects_header.copy()
+            headers.update(
+                {'x-auth-sudo-project-id': self.share_zone_client.project_id})
+        else:
+            headers = self.all_projects_header
+
         shared_zone = self.adm_shr_client.create_zone_share(
             self.zone['id'], self.alt_zone_client.project_id,
             headers=headers)[1]
@@ -387,9 +368,49 @@ class AdminSharedZonesTest(BaseSharedZoneTest):
         self.adm_shr_client.delete_zone_share(
             self.zone['id'], shared_zone['id'], headers=sudo_header)
         self.assertRaises(lib_exc.NotFound,
-                          self.adm_shr_client.show_zone_share,
-                          self.zone['id'], shared_zone['id'],
-                          headers=sudo_header)
+            self.adm_shr_client.show_zone_share,
+            self.zone['id'], shared_zone['id'], headers=sudo_header)
+
+    @decorators.idempotent_id('2eedfd60-b90f-11ed-b4ca-201e8823901f')
+    def test_list_zone_shares_all_projects_header(self):
+        LOG.info(
+            "Admin user shares Primary's zone with Alt tenant"
+            " using 'x-auth-all-projects' header")
+        # Scoped tokens do not have a project ID, work around that here
+        if CONF.enforce_scope.designate:
+            headers = self.all_projects_header.copy()
+            headers.update(
+                {'x-auth-sudo-project-id': self.share_zone_client.project_id})
+        else:
+            headers = self.all_projects_header
+
+        shared_zone = self.adm_shr_client.create_zone_share(
+            self.zone['id'], self.alt_zone_client.project_id,
+            headers=headers)[1]
+        self.addCleanup(
+            self.adm_shr_client.delete_zone_share, self.zone['id'],
+            shared_zone['id'], headers=self.all_projects_header)
+
+        LOG.info(
+            "Admin user shares Primary's zone with Demo tenant"
+            " using 'x-auth-all-projects' header")
+        shared_zone = self.adm_shr_client.create_zone_share(
+            self.zone['id'], self.demo_zone_client.project_id,
+            headers=headers)[1]
+        self.addCleanup(
+            self.adm_shr_client.delete_zone_share, self.zone['id'],
+            shared_zone['id'], headers=self.all_projects_header)
+
+        LOG.info('Admin user lists zone shares')
+        body = self.adm_shr_client.list_zone_shares(
+            self.zone['id'], headers=self.all_projects_header)[1]
+
+        self.assertEqual(2, len(body['shared_zones']))
+        targets = []
+        for share in body['shared_zones']:
+            targets.append(share['target_project_id'])
+        self.assertIn(self.alt_zone_client.project_id, targets)
+        self.assertIn(self.demo_zone_client.project_id, targets)
 
 
 class AdminSharedZonesTestNegative(BaseSharedZoneTest):
@@ -455,24 +476,24 @@ class AdminSharedZonesTestNegative(BaseSharedZoneTest):
 
     @decorators.idempotent_id('871e7e1c-bd9a-11ed-80f5-201e8823901f')
     @decorators.skip_because(bug="2009819")
-    def test_list_shares_invalid_zone_id(self):
+    def test_list_zone_shares_invalid_zone_id(self):
         LOG.info('Admin user tries to list shared zone '
                  'using not existing zone ID')
         sudo_header = {
             'x-auth-sudo-project-id': self.share_zone_client.project_id}
         self.assertRaises(
-            lib_exc.NotFound, self.adm_shr_client.list_shares,
+            lib_exc.NotFound, self.adm_shr_client.list_zone_shares,
             data_utils.rand_uuid(), headers=sudo_header)
 
     @decorators.idempotent_id('e71068c8-bdb1-11ed-80f5-201e8823901f')
     @ decorators.skip_because(bug="2009819")
-    def test_list_shares_invalid_project_id(self):
+    def test_list_zone_shares_invalid_project_id(self):
         LOG.info('Admin user tries to list shared zone using '
                  'not existing project ID')
         sudo_header = {
             'x-auth-sudo-project-id': data_utils.rand_uuid()}
         self.assertRaises(
-            lib_exc.NotFound, self.adm_shr_client.list_shares,
+            lib_exc.NotFound, self.adm_shr_client.list_zone_shares,
             self.zone['id'], headers=sudo_header)
 
     @decorators.idempotent_id('7136b430-bdb2-11ed-80f5-201e8823901f')

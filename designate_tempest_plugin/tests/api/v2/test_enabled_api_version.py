@@ -84,7 +84,7 @@ class DesignateApiVersion(base.BaseDnsV2Test, service_base.DnsClientV2Base):
             LOG.info('Enabled versions IDs are:{}'.format(enabled_ids))
 
             # Expect at least one of these to be present in the API
-            base_versions = {'v2', 'v2.0'}
+            base_versions = {'v1', 'v2', 'v2.0'}
             self.assertFalse(
                 enabled_ids.isdisjoint(base_versions),
                 'Failed, at least one base API version: {} was not found in '

@@ -26,7 +26,8 @@ LOG = logging.getLogger(__name__)
 
 class ServiceStatusAdmin(base.BaseDnsV2Test):
 
-    credentials = ["primary", "admin"]
+    credentials = ["primary", "admin", "alt",
+                   "project_reader", "project_member"]
 
     mandatory_services = ['central', 'mdns', 'worker', 'producer']
     service_status_fields = [
@@ -62,12 +63,12 @@ class ServiceStatusAdmin(base.BaseDnsV2Test):
                 "Failed, expected service: {} wasn't detected in API "
                 "response".format(service))
 
+        LOG.info('Make sure that every mandatory service has at least one '
+                 'instance in UP status.')
         # NOTE(ccloud): Designate keeps a status record for every host that
         # ever ran a service. Hosts and pods replaced long ago stay in the
         # list as STOPPED, so requiring every record to be UP fails on a
         # long-lived cloud. Require an UP instance per mandatory service.
-        LOG.info('Make sure that every mandatory service has at least one '
-                 'instance in UP status.')
         for service in self.mandatory_services:
             self.assertIn(
                 const.UP,

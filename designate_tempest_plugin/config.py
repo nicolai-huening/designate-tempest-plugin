@@ -13,9 +13,7 @@
 # under the License.
 from oslo_config import cfg
 
-service_available_group = cfg.OptGroup(name="service_available",
-                                       title="Available OpenStack Services")
-
+# Extending the service_available group defined in tempest
 ServiceAvailableGroup = [
     cfg.BoolOpt("designate",
                 default=True,
@@ -41,18 +39,20 @@ DnsGroup = [
                default=360,
                help="Timeout in seconds to wait for an resource to build."),
     cfg.IntOpt('min_ttl',
-               default=1,
-               help="The minimum value to respect when generating ttls"),
+               default=0,
+               help="The minimum value to respect when generating ttl"),
     cfg.ListOpt('nameservers',
                 default=[],
                 help="The nameservers to check for change going live"),
     cfg.IntOpt('query_timeout',
-               default=1,
+               default=4,
                help="The timeout on a single dns query to a nameserver"),
     cfg.StrOpt('zone_id',
                help="The target zone to test the dns recordsets "
-                    "If it is not specified, a new zone will be created ")
-
+                    "If it is not specified, a new zone will be created "),
+    cfg.StrOpt('tld_suffix',
+               default='test',
+               help="TLD suffix that used in all tests (if not overridden).")
 ]
 
 dns_feature_group = cfg.OptGroup(name='dns_feature_enabled',
@@ -63,14 +63,8 @@ DnsFeatureGroup = [
                 default=True,
                 help="Is the v2 dns API enabled."),
     cfg.BoolOpt('api_admin',
-                default=True,
-                help="Is the admin dns API enabled."),
-    cfg.BoolOpt('enforce_new_defaults',
                 default=False,
-                help="Does the dns service API policies enforce "
-                     "the new keystone default roles? This configuration "
-                     "value should be same as designate.conf: "
-                     "[oslo_policy].enforce_new_defaults option."),
+                help="Is the admin dns API enabled."),
     cfg.BoolOpt('api_v2_root_recordsets',
                 default=False,
                 help="Is the v2 root recordsets API enabled."),
@@ -81,15 +75,29 @@ DnsFeatureGroup = [
                 default=False,
                 help="Is project IDs verified when setting v2 quotas. "
                 "Must be set to True starting from Rocky release."),
-    cfg.BoolOpt('bug_1573141_fixed',
-                default=True,
-                help="Is https://bugs.launchpad.net/designate/+bug/1573141 "
-                "fixed"),
-    cfg.BoolOpt('bug_1932026_fixed',
+    cfg.StrOpt('designate_manage_path',
+               default=None,
+               help="The designate-manage command path"),
+    # Note: Also see the enforce_scope section (from tempest) for Designate API
+    #       scope checking setting.
+    cfg.BoolOpt('enforce_new_defaults',
                 default=False,
-                help="Is https://bugs.launchpad.net/designate/+bug/1932026 "
-                     "fixed"),
-    cfg.StrOpt('tld_suffix',
-               default='test',
-               help="TLD suffix that used in all tests (if not overridden).")
+                help='Does the dns service API policies enforce '
+                     'the new keystone default roles? This configuration '
+                     'value should be same as designate.conf: '
+                     '[oslo_policy].enforce_new_defaults option.'),
+    cfg.BoolOpt('test_multipool_with_delete_opt',
+                default=False,
+                help="Is multipool feature being tested with --delete option?"
+                     "If it is, it might delete pools that were created in "
+                     "other tests."),
+]
+
+# Extending the enforce_scope group defined in tempest
+EnforceScopeGroup = [
+    cfg.BoolOpt('designate',
+                default=False,
+                help='Does the dns service API policies enforce '
+                     'scope? This configuration value should be same as '
+                     'designate.conf: [oslo_policy].enforce_scope option.'),
 ]

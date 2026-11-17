@@ -20,23 +20,44 @@ from designate_tempest_plugin.services.dns.v2.json import base
 class ZoneImportsClient(base.DnsClientV2Base):
 
     @base.handle_errors
-    def create_zone_import(self, zonefile_data=None,
-                           params=None, wait_until=None, force=False):
+    def create_zone_import(self, zonefile_data=None, attributes=None,
+                           wait_until=None, headers=None, force=False):
         """Create a zone import.
-        :param zonefile_data: A tuple that represents zone data.
-        :param params: A Python dict that represents the query paramaters to
-                       include in the request URI.
-        :return: Serialized imported zone as a dictionary.
+
+        When attributes are provided the request uses application/json
+        content type (the zonefile content and attributes are sent as a
+        JSON body).  Otherwise the raw zonefile text is posted with
+        content type text/dns.
+
+        :param zonefile_data: Zone file content as a string.
+        :param attributes: Optional dict of zone attributes
+            (e.g. ``{'pool_id': '<uuid>'}``).  Triggers JSON mode.
+        :param wait_until: If not None, wait for this import status.
+        :param headers: Optional headers dict for the request.
+        :param force: If True, send the X-Designate-Force-Import header.
+        :return: (response, body) tuple.
         """
+        zonefile = zonefile_data or dns_data_utils.rand_zonefile_data()
+        if attributes is not None:
+            if not headers:
+                headers = {'Content-Type': 'application/json'}
+            request_body = {
+                'zonefile': zonefile,
+                'attributes': attributes,
+            }
+        else:
+            if not headers:
+                headers = {'Content-Type': 'text/dns'}
+            request_body = zonefile
 
-        headers = {'Content-Type': 'text/dns'}
         if force:
+            headers = dict(headers)
             headers['X-Designate-Force-Import'] = True
-        zone_data = zonefile_data or dns_data_utils.rand_zonefile_data()
-        resp, body = self._create_request(
-            'zones/tasks/imports', zone_data, headers=headers)
 
-        # Create Zone should Return a HTTP 202
+        resp, body = self._create_request(
+            'zones/tasks/imports', request_body, headers=headers)
+
+        # Create Zone Import should return HTTP 202
         self.expected_success(202, resp.status)
 
         if wait_until:
@@ -45,36 +66,39 @@ class ZoneImportsClient(base.DnsClientV2Base):
         return resp, body
 
     @base.handle_errors
-    def show_zone_import(self, uuid, params=None):
+    def show_zone_import(self, uuid, params=None, headers=None):
         """Gets a specific zone import.
         :param uuid: Unique identifier of the imported zone in UUID format.
         :param params: A Python dict that represents the query paramaters to
                        include in the request URI.
+        :param headers (dict): The headers to use for the request.
         :return: Serialized imported zone as a dictionary.
         """
         return self._show_request(
-            'zones/tasks/imports', uuid, params=params)
+            'zones/tasks/imports', uuid, params=params, headers=headers)
 
     @base.handle_errors
-    def list_zone_imports(self, params=None):
+    def list_zone_imports(self, params=None, headers=None):
         """Gets all the imported zones.
         :param params: A Python dict that represents the query paramaters to
                        include in the request URI.
+        :param headers (dict): The headers to use for the request.
         :return: Serialized imported zones as a list.
         """
         return self._list_request(
-            'zones/tasks/imports', params=params)
+            'zones/tasks/imports', params=params, headers=headers)
 
     @base.handle_errors
-    def delete_zone_import(self, uuid, params=None):
+    def delete_zone_import(self, uuid, params=None, headers=None):
         """Deletes a imported zone having the specified UUID.
         :param uuid: The unique identifier of the imported zone.
         :param params: A Python dict that represents the query paramaters to
                        include in the request URI.
+        :param headers (dict): The headers to use for the request.
         :return: A tuple with the server response and the response body.
         """
         resp, body = self._delete_request(
-            'zones/tasks/imports', uuid, params=params)
+            'zones/tasks/imports', uuid, params=params, headers=headers)
 
         # Delete Zone should Return a HTTP 204
         self.expected_success(204, resp.status)

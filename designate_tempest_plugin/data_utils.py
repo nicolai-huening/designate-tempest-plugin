@@ -35,7 +35,7 @@ def rand_ipv6():
     return an.format(netaddr.ipv6_compact)
 
 
-def rand_zone_name(name='', prefix='rand', suffix='.com.'):
+def rand_zone_name(name='', prefix='rand', suffix=None):
     """Generate a random zone name
     :param str name: The name that you want to include
     :param prefix: the exact text to start the string. Defaults to "rand"
@@ -43,8 +43,31 @@ def rand_zone_name(name='', prefix='rand', suffix='.com.'):
     :return: a random zone name e.g. example.org.
     :rtype: string
     """
+    if suffix is None:
+        suffix = '.{}.'.format(CONF.dns.tld_suffix)
     name = data_utils.rand_name(name=name, prefix=prefix)
     return name + suffix
+
+
+def rand_dns_name_by_size(name_size, label_size=63):
+    """Generates label based DNS name, by given characters size
+    :param name_size: size in characters
+    :param label_size: the max number of characters to be used
+                       for label. Max value according the RFC is 63
+                       https://datatracker.ietf.org/doc/html/rfc1035#
+                       section-2.3.4in
+    :return: DNS name
+    """
+    template = ''
+    while len(template) < name_size:
+        remaining_length = name_size - len(template)
+        template += '{}.'.format(rand_string(
+            min(remaining_length - 1, label_size)))
+    if template.endswith('..'):
+        raise Exception("There is no way to generate a valid DNS name "
+                        "using provided set of values:{},{}, consider "
+                        "changing those values".format(name_size, label_size))
+    return template
 
 
 def rand_email(domain=None):
@@ -56,7 +79,7 @@ def rand_email(domain=None):
     return 'example@%s' % domain.rstrip('.')
 
 
-def rand_ttl(start=1, end=86400):
+def rand_ttl(start=0, end=86400):
     """Generate a random TTL value
     :return: a random ttl e.g. 165
     :rtype: string
@@ -67,7 +90,6 @@ def rand_ttl(start=1, end=86400):
 
 def rand_zonefile_data(name=None, ttl=None):
     """Generate random zone data, with optional overrides
-
     :return: A ZoneModel
     """
     zone_base = ('$ORIGIN &\n& # IN SOA ns.& nsadmin.& # # # # #\n'
@@ -91,25 +113,20 @@ def rand_quotas(zones=None, zone_records=None, zone_recordsets=None,
             zone_recordsets or data_utils.rand_int_id(100, 999999),
         'recordset_records':
             recordset_records or data_utils.rand_int_id(100, 999999),
-    }
-
-    if CONF.dns_feature_enabled.bug_1573141_fixed:
-        quotas_dict['api_export_size'] = \
+        'api_export_size':
             api_export_size or data_utils.rand_int_id(100, 999999)
-    else:
-        LOG.warn("Leaving `api_export_size` out of quota data due to: "
-                 "https://bugs.launchpad.net/designate/+bug/1573141")
+    }
 
     return quotas_dict
 
 
 def rand_zone_data(name=None, email=None, ttl=None, description=None):
     """Generate random zone data, with optional overrides
-
     :return: A ZoneModel
     """
     if name is None:
-        name = rand_zone_name(prefix='testdomain', suffix='.com.')
+        name = rand_zone_name(
+            prefix='testdomain', suffix='.{}.'.format(CONF.dns.tld_suffix))
     if email is None:
         email = ("admin@" + name).strip('.')
     if description is None:
@@ -146,7 +163,7 @@ def rand_recordset_data(record_type, zone_name, name=None, records=None,
 def rand_a_recordset(zone_name, ips=None, **kwargs):
     if ips is None:
         return rand_recordset_data(
-                'A', zone_name, records=[rand_ip()], **kwargs)
+            'A', zone_name, records=[rand_ip()], **kwargs)
     else:
         return rand_recordset_data('A', zone_name, records=ips, **kwargs)
 
@@ -189,8 +206,7 @@ def rand_sshfp_recordset(zone_name, algorithm_number=None,
                          **kwargs):
     algorithm_number = algorithm_number or 2
     fingerprint_type = fingerprint_type or 1
-    fingerprint = fingerprint or \
-        "123456789abcdef67890123456789abcdef67890"
+    fingerprint = fingerprint or "123456789abcdef67890123456789abcdef67890"
 
     data = "%s %s %s" % (algorithm_number, fingerprint_type, fingerprint)
     return rand_recordset_data('SSHFP', zone_name, records=[data], **kwargs)
@@ -203,18 +219,32 @@ def rand_txt_recordset(zone_name, data=None, **kwargs):
 
 def wildcard_ns_recordset(zone_name):
     name = "*.{0}".format(zone_name)
-    records = ["ns.example.com."]
+    records = ["ns.example.{}.".format(CONF.dns.tld_suffix)]
     return rand_recordset_data('NS', zone_name, name, records)
 
 
 def rand_ns_records():
-    ns_zone = rand_zone_name(prefix='testdomain')
-    records = []
+    ns_zone = rand_zone_name()
+    ns_records = []
+    # Make sure we don't have equal priority here which causes test failures
+    # when doing sorted comparisons
     for i in range(0, 2):
-        records.append("ns%s.%s" % (i, ns_zone))
-    ns_records = [{"hostname": x, "priority": random.randint(1, 999)}
-                  for x in records]
+        ns_records.append({"hostname": "ns%s.%s" % (i, ns_zone),
+                           "priority": (random.randint(1, 999) + i)})
     return ns_records
+
+
+def rand_soa_records(number_of_records=2):
+    return ['{} {} {} {} {} {}.'.format(
+        '{}.{}.{}'.format(rand_string(3), rand_string(7), rand_string(3)),
+        random.randint(1000000000, 2020080302), random.randint(3000, 7200),
+        random.randint(1000, 3600), random.randint(1000000, 1209600),
+        random.randint(1000, 3600)) for i in range(0, number_of_records)]
+
+
+def rand_soa_recordset(zone_name, **kwargs):
+    return rand_recordset_data(
+        'SOA', zone_name, records=rand_soa_records(), **kwargs)
 
 
 def rand_tld():
@@ -226,7 +256,6 @@ def rand_tld():
 
 def rand_transfer_request_data(description=None, target_project_id=None):
     """Generate random transfer request data, with optional overrides
-
     :return: A TransferRequest data
     """
 
@@ -256,7 +285,6 @@ def make_rand_recordset(zone_name, record_type):
     """Create a rand recordset by type
     This essentially just dispatches to the relevant random recordset
     creation functions.
-
     :param str zone_name: The zone name the recordset applies to
     :param str record_type: The type of recordset (ie A, MX, NS, etc...)
     """
@@ -289,15 +317,3 @@ def rand_domain_name(tld=None):
     domain_tld = tld or rand_string(3)
     return rand_string(4) + '.' + rand_string(6) + '.' + domain_tld + '.'
 
-
-def rand_soa_records(number_of_records=2):
-    return ['{} {} {} {} {} {}.'.format(
-        '{}.{}.{}'.format(rand_string(3), rand_string(7), rand_string(3)),
-        random.randint(1000000000, 2020080302), random.randint(3000, 7200),
-        random.randint(1000, 3600), random.randint(1000000, 1209600),
-        random.randint(1000, 3600)) for i in range(0, number_of_records)]
-
-
-def rand_soa_recordset(zone_name, **kwargs):
-    return rand_recordset_data(
-        'SOA', zone_name, records=rand_soa_records(), **kwargs)

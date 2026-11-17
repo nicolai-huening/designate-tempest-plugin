@@ -12,11 +12,10 @@
 # License for the specific language governing permissions and limitations
 # under the License.
 from oslo_log import log as logging
-from tempest import config
+from tempest.lib.common.utils import test_utils
 from tempest.lib.common.utils import data_utils
 from tempest.lib import decorators
 from tempest.lib import exceptions as lib_exc
-import testtools
 
 from designate_tempest_plugin.tests import base
 from designate_tempest_plugin.common import constants as const
@@ -25,7 +24,6 @@ from designate_tempest_plugin import data_utils as dns_data_utils
 
 import tempest.api.network.base
 
-CONF = config.CONF
 LOG = logging.getLogger(__name__)
 
 
@@ -33,11 +31,22 @@ class BasePtrTest(base.BaseDnsV2Test):
     excluded_keys = ['created_at', 'updated_at', 'version', 'links',
                      'status', 'action']
 
+    def _unset_ptr(self, ptr_client, fip_id):
+        self.unset_ptr(ptr_client, fip_id)
+        try:
+            waiters.wait_for_ptr_status(
+                ptr_client, fip_id=fip_id, status=const.INACTIVE)
+        except lib_exc.NotFound:
+            # The DB-backed PTR API returns 404 after deletion completes.
+            pass
+
     @classmethod
     def setup_clients(cls):
         super(BasePtrTest, cls).setup_clients()
 
         cls.admin_tld_client = cls.os_admin.dns_v2.TldClient()
+        cls.admin_network_client = cls.os_admin.networks_client
+        cls.admin_subnet_client = cls.os_admin.subnets_client
 
     @classmethod
     def resource_setup(cls):
@@ -47,6 +56,26 @@ class BasePtrTest(base.BaseDnsV2Test):
         tld_name = dns_data_utils.rand_zone_name(name='BasePtrTest')
         cls.tld_name = tld_name[:-1]
         cls.class_tld = cls.admin_tld_client.create_tld(tld_name=tld_name[:-1])
+
+        # Create dedicated External network for PTRs tests
+        network_name = data_utils.rand_name('designate-tempest-fips-external')
+        cls.external_network = cls.admin_network_client.create_network(
+            name=network_name, **{'router:external': True})['network']
+        cls.addClassResourceCleanup(
+            test_utils.call_and_ignore_notfound_exc,
+            cls.admin_network_client.delete_network,
+            cls.external_network['id'])
+
+        # Create subnet for External network
+        cls.external_subnet = cls.admin_subnet_client.create_subnet(
+            network_id=cls.external_network['id'],
+            allocation_pools=[
+                {'start': '198.51.100.10', 'end': '198.51.100.200'}],
+            cidr='198.51.100.0/24', ip_version=4, enable_dhcp=False)
+        cls.addClassResourceCleanup(
+            test_utils.call_and_ignore_notfound_exc,
+            cls.admin_subnet_client.delete_subnet,
+            cls.external_subnet['subnet']['id'])
 
     @classmethod
     def resource_cleanup(cls):
@@ -67,8 +96,8 @@ class DesignatePtrRecord(BasePtrTest, tempest.test.BaseTestCase):
     @classmethod
     def setup_clients(cls):
         super(DesignatePtrRecord, cls).setup_clients()
-        cls.admin_ptr_client = cls.os_admin.ptr_client
-        cls.primary_ptr_client = cls.os_primary.ptr_client
+        cls.admin_ptr_client = cls.os_admin.dns_v2.PtrClient()
+        cls.primary_ptr_client = cls.os_primary.dns_v2.PtrClient()
         cls.primary_floating_ip_client = cls.os_primary.floating_ips_client
 
     @classmethod
@@ -91,7 +120,7 @@ class DesignatePtrRecord(BasePtrTest, tempest.test.BaseTestCase):
             tld = self.tld_name
         if not fip_id:
             fip = self.primary_floating_ip_client.create_floatingip(
-                floating_network_id=CONF.network.public_network_id)[
+                floating_network_id=self.external_network['id'])[
                 'floatingip']
             fip_id = fip['id']
             self.addCleanup(
@@ -99,18 +128,13 @@ class DesignatePtrRecord(BasePtrTest, tempest.test.BaseTestCase):
         ptr = self.primary_ptr_client.set_ptr_record(
             fip_id, ptr_name=ptr_name, ttl=ttl, description=description,
             headers=headers, tld=tld)
-        self.addCleanup(self.unset_ptr, self.primary_ptr_client, fip_id)
+        self.addCleanup(self._unset_ptr, self.primary_ptr_client, fip_id)
 
         self.assertEqual('CREATE', ptr['action'])
         self.assertEqual('PENDING', ptr['status'])
         waiters.wait_for_ptr_status(
             self.primary_ptr_client, fip_id=fip_id, status=const.ACTIVE)
         return fip_id, ptr
-
-    def _unset_ptr(self, fip_id):
-        self.primary_ptr_client.unset_ptr_record(fip_id)
-        waiters.wait_for_ptr_status(
-            self.primary_ptr_client, fip_id=fip_id, status=const.INACTIVE)
 
     @decorators.idempotent_id('2fb9d6ea-871d-11eb-9f9a-74e5f9e2a801')
     def test_set_floatingip_ptr(self):
@@ -170,11 +194,9 @@ class DesignatePtrRecord(BasePtrTest, tempest.test.BaseTestCase):
             'Failed, expected ID was not found in "received_ptr_ids" list.')
 
     @decorators.idempotent_id('499b5a7e-87e1-11eb-b412-74e5f9e2a801')
-    @testtools.skipUnless(config.CONF.dns_feature_enabled.bug_1932026_fixed,
-                          'Skip unless bug 1932026 has been fixed.')
     def test_unset_floatingip_ptr(self):
-        fip_id, ptr = self._set_ptr()
-        self._unset_ptr(fip_id)
+        fip_id = self._set_ptr()[0]
+        self._unset_ptr(self.primary_ptr_client, fip_id)
 
 
 class DesignatePtrRecordNegative(BasePtrTest, tempest.test.BaseTestCase):
@@ -190,9 +212,9 @@ class DesignatePtrRecordNegative(BasePtrTest, tempest.test.BaseTestCase):
     @classmethod
     def setup_clients(cls):
         super(DesignatePtrRecordNegative, cls).setup_clients()
-        cls.primary_ptr_client = cls.os_primary.ptr_client
+        cls.primary_ptr_client = cls.os_primary.dns_v2.PtrClient()
         cls.primary_floating_ip_client = cls.os_primary.floating_ips_client
-        cls.admin_ptr_client = cls.os_admin.ptr_client
+        cls.admin_ptr_client = cls.os_admin.dns_v2.PtrClient()
 
     @classmethod
     def resource_setup(cls):
@@ -215,7 +237,7 @@ class DesignatePtrRecordNegative(BasePtrTest, tempest.test.BaseTestCase):
             tld = self.tld_name
         if not fip_id:
             fip = self.primary_floating_ip_client.create_floatingip(
-                floating_network_id=CONF.network.public_network_id)[
+                floating_network_id=self.external_network['id'])[
                 'floatingip']
             fip_id = fip['id']
             self.addCleanup(
@@ -223,7 +245,7 @@ class DesignatePtrRecordNegative(BasePtrTest, tempest.test.BaseTestCase):
         ptr = self.primary_ptr_client.set_ptr_record(
             fip_id, ptr_name=ptr_name, ttl=ttl, description=description,
             headers=headers, tld=tld)
-        self.addCleanup(self.unset_ptr, self.primary_ptr_client, fip_id)
+        self.addCleanup(self._unset_ptr, self.primary_ptr_client, fip_id)
         self.assertEqual('CREATE', ptr['action'])
         self.assertEqual('PENDING', ptr['status'])
         waiters.wait_for_ptr_status(
